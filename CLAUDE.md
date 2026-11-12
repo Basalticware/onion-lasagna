@@ -88,7 +88,7 @@ HTTP Request → Framework Adapter → RawHttpRequest
 ## Error Flow
 
 ```
-Repository throws → BaseOutboundAdapter wraps → InfraError
+Repository throws → BaseOutboundAdapter: PASSTHROUGH all CodedError, WRAP others → InfraError
     → UseCase (passthrough or throw UseCaseError/DomainError)
     → BaseInboundAdapter.execute()
         PASSTHROUGH: ObjectValidationError, UseCaseError, DomainError, InfraError
@@ -141,7 +141,9 @@ Repository throws → BaseOutboundAdapter wraps → InfraError
 | --------------------- | ------------------------------------------ |
 | `BaseOutboundAdapter` | Auto-wraps ALL methods with error handling |
 
-Override `createInfraError(error, methodName)` to customize error type.
+Known errors (any `CodedError`) thrown inside an adapter method pass through unchanged; only
+unknown errors are wrapped. Override `createInfraError(error, methodName)` to customize the
+wrapping error type.
 
 **Errors:** `InfraError`, `DbError`, `NetworkError`, `TimeoutError`, `ExternalServiceError`
 

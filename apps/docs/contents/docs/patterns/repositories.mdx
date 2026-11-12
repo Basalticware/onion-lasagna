@@ -69,7 +69,7 @@ class UserRepository
 }
 ```
 
-**Note:** `BaseOutboundAdapter` automatically wraps all methods with error handling, converting any thrown errors to `InfraError`.
+**Note:** `BaseOutboundAdapter` automatically wraps all methods with error handling: known errors (any `CodedError`, e.g. `ConflictError`, `NotFoundError`, `InfraError`) pass through unchanged, and any other thrown error is converted to `InfraError`.
 
 ---
 

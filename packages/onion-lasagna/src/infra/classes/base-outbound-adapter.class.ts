@@ -1,3 +1,4 @@
+import { CodedError } from '../../global/exceptions/coded-error.error';
 import { InfraError } from '../exceptions/infra.error';
 
 /** @internal Function signature for wrapped methods. */
@@ -31,10 +32,15 @@ type UnknownFn = (...args: unknown[]) => unknown;
  * - Methods on `BaseOutboundAdapter.prototype` itself (infrastructure methods).
  * - `createInfraError` itself.
  *
- * ### Double-wrap prevention
+ * ### Known errors pass through
  *
- * If the thrown (or rejected) value is already an `instanceof InfraError`
- * it is re-thrown as-is so that the subtype and error code are preserved.
+ * Known errors pass through; unknown errors are wrapped. If the thrown (or
+ * rejected) value is already an `instanceof CodedError` — an `InfraError`
+ * subtype, but equally a `ConflictError`, `NotFoundError`,
+ * `UnprocessableError`, `DomainError`, … — it is re-thrown as-is so that its
+ * subtype and error code are preserved (a 409 stays a 409 instead of being
+ * masked as a 500). Only values that are not a `CodedError` (plain `Error`s,
+ * driver errors, non-error throwables) are handed to `createInfraError`.
  *
  * ### Configurability
  *
@@ -138,7 +144,7 @@ export abstract class BaseOutboundAdapter {
           try {
             result = Reflect.apply(raw as UnknownFn, receiver, args);
           } catch (error) {
-            if (error instanceof InfraError) throw error;
+            if (error instanceof CodedError) throw error;
             throw (receiver as BaseOutboundAdapter).createInfraError(error, methodName);
           }
 
@@ -177,7 +183,7 @@ export abstract class BaseOutboundAdapter {
             typeof (result as { then?: unknown }).then === 'function'
           ) {
             return Promise.resolve(result as PromiseLike<unknown>).catch((error: unknown) => {
-              if (error instanceof InfraError) throw error;
+              if (error instanceof CodedError) throw error;
               throw (receiver as BaseOutboundAdapter).createInfraError(error, methodName);
             });
           }
@@ -205,6 +211,9 @@ export abstract class BaseOutboundAdapter {
   /**
    * Factory method for creating infrastructure errors.
    *
+   * Called only for errors that are not already a `CodedError`; known coded
+   * errors thrown inside an adapter method are re-thrown unchanged.
+   *
    * Override this in subclasses to return specific error types
    * (e.g., `DbError`, `NetworkError`, `ExternalServiceError`).
    *
@@ -221,7 +230,8 @@ export abstract class BaseOutboundAdapter {
 }
 
 /**
- * @internal Wraps an AsyncGenerator so any error during iteration is converted to an InfraError.
+ * @internal Wraps an AsyncGenerator so any non-`CodedError` thrown during iteration is converted
+ * to an InfraError (known `CodedError`s pass through).
  * Implemented as a delegating generator (`yield*`) so the full async-iterator protocol
  * (next-args, return, throw, return value) is preserved and the result is a real AsyncGenerator.
  */
@@ -232,13 +242,14 @@ async function* wrapAsyncGenerator(
   try {
     return yield* gen;
   } catch (error) {
-    if (error instanceof InfraError) throw error;
+    if (error instanceof CodedError) throw error;
     throw makeInfraError(error);
   }
 }
 
 /**
- * @internal Wraps a sync Generator so any error during iteration is converted to an InfraError.
+ * @internal Wraps a sync Generator so any non-`CodedError` thrown during iteration is converted
+ * to an InfraError (known `CodedError`s pass through).
  * Delegates via `yield*` to preserve the full iterator protocol and produce a real Generator.
  */
 function* wrapSyncGenerator(
@@ -248,7 +259,7 @@ function* wrapSyncGenerator(
   try {
     return yield* gen;
   } catch (error) {
-    if (error instanceof InfraError) throw error;
+    if (error instanceof CodedError) throw error;
     throw makeInfraError(error);
   }
 }
