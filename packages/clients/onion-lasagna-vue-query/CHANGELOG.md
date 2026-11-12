@@ -1,5 +1,13 @@
 # @cosmneo/onion-lasagna-vue-query
 
+## 1.0.0-beta.4
+
+### Patch Changes
+
+- Updated dependencies [a922e76]
+  - @cosmneo/onion-lasagna@1.0.0-beta.4
+  - @cosmneo/onion-lasagna-client@1.0.0-beta.4
+
 ## 1.0.0-beta.3
 
 ### Patch Changes
