@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { BaseOutboundAdapter } from '../base-outbound-adapter.class';
 import { InfraError } from '../../exceptions/infra.error';
 import { DbError } from '../../exceptions/db.error';
+import { ConflictError } from '../../../app/exceptions/conflict.error';
+import { UnprocessableError } from '../../../app/exceptions/unprocessable.error';
+import { NotFoundError } from '../../../app/exceptions/not-found.error';
 
 // Module-scope classes — no per-test factory workaround needed since the
 // prototype-dedup bug has been fixed (each instance is independently wrapped).
@@ -438,5 +441,136 @@ describe('C03-5 — already-typed InfraErrors are not double-wrapped', () => {
       expect((err as InfraError).message).toBe('sync already infra');
       expect((err as InfraError).cause).toBeUndefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Known errors pass through: any CodedError thrown inside an adapter method
+// keeps its subtype and code. Only unknown errors are wrapped.
+// ---------------------------------------------------------------------------
+describe('known CodedErrors pass through unwrapped', () => {
+  class CodedErrorRepo extends BaseOutboundAdapter {
+    async throwsConflict(): Promise<void> {
+      throw new ConflictError({ message: 'email taken', code: 'EMAIL_TAKEN' });
+    }
+
+    syncThrowsConflict(): void {
+      throw new ConflictError({ message: 'sync conflict' });
+    }
+
+    async throwsUnprocessable(): Promise<void> {
+      throw new UnprocessableError({ message: 'cannot process' });
+    }
+
+    throwsNotFoundThenable(): {
+      then: (res: (v: void) => void, rej: (e: unknown) => void) => void;
+    } {
+      return {
+        then(_res, rej) {
+          rej(new NotFoundError({ message: 'missing' }));
+        },
+      };
+    }
+
+    async *asyncGeneratorThrowsConflict(): AsyncGenerator<number> {
+      yield 1;
+      throw new ConflictError({ message: 'async generator conflict' });
+    }
+
+    *syncGeneratorThrowsUnprocessable(): Generator<number> {
+      yield 1;
+      throw new UnprocessableError({ message: 'sync generator unprocessable' });
+    }
+
+    async throwsPlainError(): Promise<void> {
+      throw new Error('driver blew up');
+    }
+
+    syncThrowsPlainError(): void {
+      throw new Error('sync driver blew up');
+    }
+  }
+
+  class CustomFactoryCodedErrorRepo extends BaseOutboundAdapter {
+    protected override createInfraError(error: unknown, methodName: string): InfraError {
+      return new DbError({ message: `Database error in ${methodName}`, cause: error });
+    }
+
+    async throwsConflict(): Promise<void> {
+      throw new ConflictError({ message: 'duplicate key' });
+    }
+
+    async throwsPlainError(): Promise<void> {
+      throw new Error('connection reset');
+    }
+  }
+
+  it('keeps an async ConflictError as a ConflictError with its code', async () => {
+    const err = await new CodedErrorRepo().throwsConflict().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err).not.toBeInstanceOf(InfraError);
+    expect((err as ConflictError).code).toBe('EMAIL_TAKEN');
+    expect((err as ConflictError).message).toBe('email taken');
+  });
+
+  it('keeps a sync ConflictError as a ConflictError with its default code', () => {
+    const repo = new CodedErrorRepo();
+    let err: unknown;
+    try {
+      repo.syncThrowsConflict();
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConflictError);
+    expect((err as ConflictError).code).toBe('CONFLICT');
+  });
+
+  it('keeps an UnprocessableError as itself', async () => {
+    const err = await new CodedErrorRepo().throwsUnprocessable().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnprocessableError);
+    expect(err).not.toBeInstanceOf(InfraError);
+    expect((err as UnprocessableError).code).toBe('UNPROCESSABLE');
+  });
+
+  it('keeps a NotFoundError rejected by a duck-typed thenable as itself', async () => {
+    const result = new CodedErrorRepo().throwsNotFoundThenable() as unknown as Promise<void>;
+    const err = await result.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NotFoundError);
+    expect((err as NotFoundError).code).toBe('NOT_FOUND');
+  });
+
+  it('keeps a ConflictError thrown from an async generator as itself', async () => {
+    const gen = new CodedErrorRepo().asyncGeneratorThrowsConflict();
+    await gen.next();
+    const err = await gen.next().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConflictError);
+  });
+
+  it('keeps an UnprocessableError thrown from a sync generator as itself', () => {
+    const gen = new CodedErrorRepo().syncGeneratorThrowsUnprocessable();
+    gen.next();
+    expect(() => gen.next()).toThrow(UnprocessableError);
+  });
+
+  it('still wraps a plain async Error as InfraError', async () => {
+    const err = await new CodedErrorRepo().throwsPlainError().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InfraError);
+    expect((err as InfraError).message).toBe('Outbound adapter error in throwsPlainError');
+    expect((err as InfraError).cause).toBeInstanceOf(Error);
+  });
+
+  it('still wraps a plain sync Error as InfraError', () => {
+    expect(() => new CodedErrorRepo().syncThrowsPlainError()).toThrow(InfraError);
+  });
+
+  it('still wraps a plain Error with the createInfraError override, but not a ConflictError', async () => {
+    const repo = new CustomFactoryCodedErrorRepo();
+    const plain = await repo.throwsPlainError().catch((e: unknown) => e);
+    expect(plain).toBeInstanceOf(DbError);
+    expect((plain as DbError).message).toBe('Database error in throwsPlainError');
+
+    const conflict = await repo.throwsConflict().catch((e: unknown) => e);
+    expect(conflict).toBeInstanceOf(ConflictError);
+    expect(conflict).not.toBeInstanceOf(DbError);
   });
 });

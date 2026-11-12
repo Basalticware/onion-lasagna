@@ -204,7 +204,7 @@ class GetUserQuery {
 
 ## Infrastructure Errors
 
-Use for external system failures. `BaseOutboundAdapter` automatically wraps errors:
+Use for external system failures. `BaseOutboundAdapter` automatically wraps unknown errors; known errors (any `CodedError`, such as a `ConflictError` or `NotFoundError` thrown inside the adapter) pass through unchanged:
 
 ```typescript
 import { DbError, NetworkError } from '@cosmneo/onion-lasagna/backend/core/onion-layers';
