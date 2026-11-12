@@ -1,6 +1,6 @@
 {
   "name": "@cosmneo/onion-lasagna",
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0-beta.4",
   "description": "Enterprise-grade TypeScript library for building backend applications with hexagonal/onion architecture",
   "type": "module",
   "license": "MIT",

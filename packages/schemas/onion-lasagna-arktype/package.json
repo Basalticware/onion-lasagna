@@ -1,6 +1,6 @@
 {
   "name": "@cosmneo/onion-lasagna-arktype",
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0-beta.4",
   "description": "ArkType schema adapter for onion-lasagna",
   "type": "module",
   "license": "MIT",
@@ -25,7 +25,7 @@
   },
   "peerDependencies": {
     "arktype": "^2.0.0",
-    "@cosmneo/onion-lasagna": "^1.0.0-beta.3"
+    "@cosmneo/onion-lasagna": "^1.0.0-beta.4"
   },
   "scripts": {
     "build": "tsup",
