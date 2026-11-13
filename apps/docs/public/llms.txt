@@ -1185,7 +1185,7 @@ class FindUserByIdQuery
 }
 ```
 
-**Note:** Implement `handle()` (protected) instead of `execute()`. The `BaseInboundAdapter` provides `execute()` with automatic error wrapping.
+**Note:** Implement `handle()` (protected) instead of `execute()`. The `BaseInboundAdapter` provides `execute()` with automatic error wrapping: any `CodedError` thrown by `authorize()` or `handle()` passes through unchanged, and any other error is wrapped in an `InfraError` (masked as a 500, original kept as `cause`).
 
 ---
 
@@ -2844,7 +2844,7 @@ class GetOrderItemsQuery extends BaseInboundAdapter {
 
 ## Use Case Errors
 
-Use for application-level failures:
+Use for application-level failures. `BaseInboundAdapter.execute()` passes every known error (any `CodedError`, such as an `AccessDeniedError`, `InvalidRequestError` or `NotFoundError` thrown by `authorize()` or `handle()`) through unchanged, so it keeps its class and code. An unknown error (a bare `Error`, `TypeError`, …) is a bug or an outage, not a client mistake: it is wrapped in an `InfraError` with the original as `cause`, and masked as a 500 (`INTERNAL_ERROR`), never a 400:
 
 ```typescript
 

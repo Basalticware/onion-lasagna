@@ -22,6 +22,7 @@ import { DbError } from '../../../../infra/exceptions/db.error';
 import { TimeoutError } from '../../../../infra/exceptions/timeout.error';
 import { AccessDeniedError } from '../../../exceptions/access-denied.error';
 import { OutputValidationError } from '../../../exceptions/output-validation.error';
+import { InvalidRequestError } from '../../../exceptions/invalid-request.error';
 
 describe('getGraphQLErrorCode', () => {
   it('maps ObjectValidationError to VALIDATION_ERROR', () => {
@@ -158,6 +159,41 @@ describe('mapErrorToGraphQLError', () => {
       { field: 'input.name', message: 'Required' },
       { field: 'input.email', message: 'Invalid format' },
     ]);
+  });
+
+  it('maps InvalidRequestError to VALIDATION_ERROR with its own code and field details (mirrors HTTP 400)', () => {
+    const error = new InvalidRequestError({
+      message: 'Bad filter',
+      code: 'BAD_FILTER',
+      validationErrors: [{ field: 'filter.from', message: 'must be a date' }],
+    });
+
+    expect(getGraphQLErrorCode(error)).toBe('VALIDATION_ERROR');
+    expect(shouldMaskGraphQLError(error)).toBe(false);
+    expect(mapErrorToGraphQLError(error)).toEqual({
+      message: 'Bad filter',
+      extensions: {
+        code: 'VALIDATION_ERROR',
+        originalCode: 'BAD_FILTER',
+        validationErrors: [{ field: 'filter.from', message: 'must be a date' }],
+      },
+    });
+  });
+
+  it('maps InvalidRequestError by (mangled) name for bundled code', () => {
+    class _InvalidRequestError extends Error {
+      code = 'INVALID_REQUEST';
+      validationErrors = [{ field: 'q', message: 'required' }];
+    }
+
+    expect(mapErrorToGraphQLError(new _InvalidRequestError('Bad'))).toEqual({
+      message: 'Bad',
+      extensions: {
+        code: 'VALIDATION_ERROR',
+        originalCode: 'INVALID_REQUEST',
+        validationErrors: [{ field: 'q', message: 'required' }],
+      },
+    });
   });
 
   it('maps UseCaseError with message', () => {

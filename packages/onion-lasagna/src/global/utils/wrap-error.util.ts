@@ -184,12 +184,14 @@ export function wrapErrorUnless<T, E extends Error>(
  * @throws The original error if it matches a passthrough type
  * @throws {E} The transformed error for unknown error types
  *
- * @example Use case boundary
+ * @example Use case boundary (what `BaseInboundAdapter.execute` does)
  * ```typescript
+ * // Every coded error passes through; an unknown error becomes an InfraError,
+ * // which the presentation layer masks as a 500 / INTERNAL_ERROR.
  * return wrapErrorUnlessAsync(
  *   () => this.handle(input),
- *   (cause) => new UseCaseError({ message: 'Unexpected error', cause }),
- *   [ObjectValidationError, UseCaseError, DomainError, InfraError],
+ *   (cause) => new InfraError({ message: 'Unexpected use case handler error', cause }),
+ *   [CodedError],
  * );
  * ```
  *

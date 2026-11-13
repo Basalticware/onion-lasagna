@@ -91,8 +91,8 @@ HTTP Request → Framework Adapter → RawHttpRequest
 Repository throws → BaseOutboundAdapter: PASSTHROUGH all CodedError, WRAP others → InfraError
     → UseCase (passthrough or throw UseCaseError/DomainError)
     → BaseInboundAdapter.execute()
-        PASSTHROUGH: ObjectValidationError, UseCaseError, DomainError, InfraError
-        WRAP others → UseCaseError
+        PASSTHROUGH: all CodedError (AccessDeniedError, InvalidRequestError, … keep class + code)
+        WRAP others → InfraError (masked 500 / INTERNAL_ERROR, original kept as cause)
     → Route Handler
         Schema validation fails → ObjectValidationError
         PASSTHROUGH: all CodedError
@@ -130,6 +130,11 @@ Repository throws → BaseOutboundAdapter: PASSTHROUGH all CodedError, WRAP othe
 **Two-phase execution:** `BaseInboundAdapter` runs `authorize(input)` first (returns a typed `TAuthContext`), then passes both `input` and `authContext` to `handle(input, authContext)`. Override `authorize()` to perform permission checks and pre-load entities — the returned context is forwarded to `handle()`, avoiding duplicate lookups.
 
 **Errors:** `UseCaseError`, `UnauthorizedError` (401), `ForbiddenError` (403), `NotFoundError` (404), `ConflictError` (409), `UnprocessableError` (422)
+
+`execute()` re-throws any `CodedError` from `authorize()` or `handle()` unchanged. Anything else (a bare
+`Error`, `TypeError`, a thrown string) is an unexpected failure and is wrapped in an `InfraError`
+(`'Unexpected use case handler error'`, original as `cause`): masked as a 500 / `INTERNAL_ERROR`,
+never a 400 `UseCaseError`.
 
 > **Search:** For error handling logic, read `packages/onion-lasagna/src/app/classes/base-inbound-adapter.class.ts`
 
@@ -208,6 +213,11 @@ const routes = serverRoutes(projectRouter)
 | `ConflictError`                                | 409    | No                         |
 | `UnprocessableError`                           | 422    | No                         |
 | `DomainError`, `InfraError`, `ControllerError` | 500    | **Yes** (security)         |
+| Unknown (incl. other `CodedError`s)            | 500    | **Yes**                    |
+
+GraphQL (`mapErrorToGraphQLError`) mirrors this: `VALIDATION_ERROR` (incl. `InvalidRequestError`),
+`UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `UNPROCESSABLE`, `BAD_REQUEST`
+(`UseCaseError`), and masked `INTERNAL_ERROR` for everything that is 500 above.
 
 > **Search:** For mapping logic, read `mapErrorToHttpResponse` in `packages/onion-lasagna/src/presentation/http/shared/error-mapping.ts`. Each framework adapter re-exports it as `mapErrorToResponse` (a local alias).
 
