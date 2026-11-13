@@ -1,5 +1,12 @@
 # @cosmneo/onion-lasagna-fastify
 
+## 1.0.0-beta.5
+
+### Patch Changes
+
+- Updated dependencies [49f11ea]
+  - @cosmneo/onion-lasagna@1.0.0-beta.5
+
 ## 1.0.0-beta.4
 
 ### Patch Changes

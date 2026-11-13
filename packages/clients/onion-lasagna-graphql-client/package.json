@@ -1,6 +1,6 @@
 {
   "name": "@cosmneo/onion-lasagna-graphql-client",
-  "version": "1.0.0-beta.4",
+  "version": "1.0.0-beta.5",
   "description": "Type-safe GraphQL client and test utilities for onion-lasagna",
   "type": "module",
   "license": "MIT",
@@ -24,7 +24,7 @@
     "zod": "4.3.6"
   },
   "peerDependencies": {
-    "@cosmneo/onion-lasagna": "^1.0.0-beta.4"
+    "@cosmneo/onion-lasagna": "^1.0.0-beta.5"
   },
   "scripts": {
     "build": "tsup",

@@ -1,6 +1,6 @@
 {
   "name": "@cosmneo/onion-lasagna-swr",
-  "version": "1.0.0-beta.4",
+  "version": "1.0.0-beta.5",
   "description": "SWR hooks adapter for onion-lasagna",
   "type": "module",
   "license": "MIT",
@@ -31,8 +31,8 @@
   "peerDependencies": {
     "swr": "^2",
     "react": "^18 || ^19",
-    "@cosmneo/onion-lasagna": "^1.0.0-beta.4",
-    "@cosmneo/onion-lasagna-client": "^1.0.0-beta.4"
+    "@cosmneo/onion-lasagna": "^1.0.0-beta.5",
+    "@cosmneo/onion-lasagna-client": "^1.0.0-beta.5"
   },
   "scripts": {
     "build": "tsup",

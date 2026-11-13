@@ -1,6 +1,6 @@
 {
   "name": "@cosmneo/onion-lasagna-svelte-query",
-  "version": "1.0.0-beta.4",
+  "version": "1.0.0-beta.5",
   "description": "Svelte Query hooks adapter for onion-lasagna",
   "type": "module",
   "license": "MIT",
@@ -30,8 +30,8 @@
   "peerDependencies": {
     "@tanstack/svelte-query": "^5",
     "svelte": "^4 || ^5",
-    "@cosmneo/onion-lasagna": "^1.0.0-beta.4",
-    "@cosmneo/onion-lasagna-client": "^1.0.0-beta.4"
+    "@cosmneo/onion-lasagna": "^1.0.0-beta.5",
+    "@cosmneo/onion-lasagna-client": "^1.0.0-beta.5"
   },
   "scripts": {
     "build": "tsup",

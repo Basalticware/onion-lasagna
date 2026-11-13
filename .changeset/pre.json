@@ -30,6 +30,7 @@
   "changesets": [
     "easy-islands-cry",
     "hono-binary-response-bodies",
+    "inbound-adapter-coded-error-passthrough",
     "large-wolves-rush",
     "outbound-adapter-coded-error-passthrough",
     "schedule-transport-tier",
