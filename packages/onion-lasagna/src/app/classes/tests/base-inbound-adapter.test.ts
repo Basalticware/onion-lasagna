@@ -7,6 +7,9 @@ import { ObjectValidationError } from '../../../global/exceptions/object-validat
 import { ForbiddenError } from '../../exceptions/forbidden.error';
 import { NotFoundError } from '../../exceptions/not-found.error';
 import { UnauthorizedError } from '../../exceptions/unauthorized.error';
+import { CodedError } from '../../../global/exceptions/coded-error.error';
+import { AccessDeniedError } from '../../../presentation/exceptions/access-denied.error';
+import { InvalidRequestError } from '../../../presentation/exceptions/invalid-request.error';
 
 // Plain types for input/output
 interface InputData {
@@ -112,15 +115,46 @@ describe('BaseInboundAdapter', () => {
 
         await expect(useCase.execute(input)).rejects.toThrow(originalError);
       });
+
+      it('should re-throw AccessDeniedError without wrapping', async () => {
+        const originalError = new AccessDeniedError({ message: 'Access denied' });
+        const useCase = new FailingUseCase(originalError);
+
+        await expect(useCase.execute({ name: 'Test' })).rejects.toBe(originalError);
+      });
+
+      it('should re-throw InvalidRequestError without wrapping', async () => {
+        const originalError = new InvalidRequestError({
+          message: 'Bad request',
+          code: 'BAD_INPUT',
+          validationErrors: [],
+        });
+        const useCase = new FailingUseCase(originalError);
+
+        await expect(useCase.execute({ name: 'Test' })).rejects.toBe(originalError);
+      });
+
+      it('should re-throw any CodedError subclass without wrapping', async () => {
+        class CustomCodedError extends CodedError {
+          constructor() {
+            super({ message: 'Custom', code: 'CUSTOM' });
+          }
+        }
+        const originalError = new CustomCodedError();
+        const useCase = new FailingUseCase(originalError);
+
+        await expect(useCase.execute({ name: 'Test' })).rejects.toBe(originalError);
+      });
     });
 
     describe('wrapped errors', () => {
-      it('should wrap unknown errors in UseCaseError', async () => {
+      it('should wrap unknown errors in InfraError (masked 500), not UseCaseError', async () => {
         const unknownError = new Error('Something unexpected');
         const useCase = new FailingUseCase(unknownError);
         const input: InputData = { name: 'Test' };
 
-        await expect(useCase.execute(input)).rejects.toThrow(UseCaseError);
+        await expect(useCase.execute(input)).rejects.toThrow(InfraError);
+        await expect(useCase.execute(input)).rejects.not.toThrow(UseCaseError);
       });
 
       it('should preserve original error as cause', async () => {
@@ -128,11 +162,13 @@ describe('BaseInboundAdapter', () => {
         const useCase = new FailingUseCase(unknownError);
         const input: InputData = { name: 'Test' };
 
+        expect.assertions(3);
         try {
           await useCase.execute(input);
         } catch (error) {
-          expect(error).toBeInstanceOf(UseCaseError);
-          expect((error as UseCaseError).cause).toBe(unknownError);
+          expect(error).toBeInstanceOf(InfraError);
+          expect((error as InfraError).message).toBe('Unexpected use case handler error');
+          expect((error as InfraError).cause).toBe(unknownError);
         }
       });
 
@@ -141,7 +177,7 @@ describe('BaseInboundAdapter', () => {
         const useCase = new FailingUseCase(typeError);
         const input: InputData = { name: 'Test' };
 
-        await expect(useCase.execute(input)).rejects.toThrow(UseCaseError);
+        await expect(useCase.execute(input)).rejects.toThrow(InfraError);
       });
 
       it('should wrap RangeError', async () => {
@@ -149,7 +185,7 @@ describe('BaseInboundAdapter', () => {
         const useCase = new FailingUseCase(rangeError);
         const input: InputData = { name: 'Test' };
 
-        await expect(useCase.execute(input)).rejects.toThrow(UseCaseError);
+        await expect(useCase.execute(input)).rejects.toThrow(InfraError);
       });
     });
 
@@ -158,7 +194,7 @@ describe('BaseInboundAdapter', () => {
         const useCase = new SyncErrorUseCase();
         const input: InputData = { name: 'Test' };
 
-        await expect(useCase.execute(input)).rejects.toThrow(UseCaseError);
+        await expect(useCase.execute(input)).rejects.toThrow(InfraError);
       });
     });
   });
@@ -308,7 +344,7 @@ describe('BaseInboundAdapter', () => {
         await expect(useCase.execute({ name: 'Test' })).rejects.toThrow(NotFoundError);
       });
 
-      it('should wrap unknown errors from authorize in UseCaseError', async () => {
+      it('should wrap unknown errors from authorize in InfraError', async () => {
         class UnknownErrorAuthUseCase extends BaseInboundAdapter<InputData, OutputData> {
           protected async authorize(_input: InputData): Promise<void> {
             throw new Error('Unexpected error in authorization');
@@ -320,7 +356,7 @@ describe('BaseInboundAdapter', () => {
         }
 
         const useCase = new UnknownErrorAuthUseCase();
-        await expect(useCase.execute({ name: 'Test' })).rejects.toThrow(UseCaseError);
+        await expect(useCase.execute({ name: 'Test' })).rejects.toThrow(InfraError);
       });
     });
 

@@ -8,7 +8,8 @@ description: Use when creating Onion Lasagna commands, queries, inbound ports, B
 ## Overview
 
 Use cases coordinate application behavior. `BaseInboundAdapter` always runs `authorize(input)` before
-`handle(input, authContext)` and wraps unknown errors as `UseCaseError`.
+`handle(input, authContext)`. Any `CodedError` passes through unchanged; an unknown error is wrapped as
+an `InfraError` (masked 500, original kept as `cause`), never a 400 `UseCaseError`.
 
 ## Always First
 

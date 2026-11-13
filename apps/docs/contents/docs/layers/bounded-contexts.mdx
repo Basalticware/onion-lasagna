@@ -149,7 +149,7 @@ class FindUserByIdQuery
 }
 ```
 
-**Note:** Implement `handle()` (protected) instead of `execute()`. The `BaseInboundAdapter` provides `execute()` with automatic error wrapping.
+**Note:** Implement `handle()` (protected) instead of `execute()`. The `BaseInboundAdapter` provides `execute()` with automatic error wrapping: any `CodedError` thrown by `authorize()` or `handle()` passes through unchanged, and any other error is wrapped in an `InfraError` (masked as a 500, original kept as `cause`).
 
 ---
 

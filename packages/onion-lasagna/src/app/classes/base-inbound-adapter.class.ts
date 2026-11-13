@@ -1,8 +1,6 @@
 import type { BaseInboundPort } from '../interfaces/ports/base-inbound.port';
-import { ObjectValidationError } from '../../global/exceptions/object-validation.error';
+import { CodedError } from '../../global/exceptions/coded-error.error';
 import { wrapErrorUnlessAsync } from '../../global/utils/wrap-error.util';
-import { UseCaseError } from '../exceptions/use-case.error';
-import { DomainError } from '../../domain/exceptions/domain.error';
 import { InfraError } from '../../infra/exceptions/infra.error';
 
 /**
@@ -11,8 +9,13 @@ import { InfraError } from '../../infra/exceptions/infra.error';
  * Implements the {@link BaseInboundPort} interface and provides:
  * - Two-phase execution: `authorize()` runs before `handle()`
  * - Typed context passing from authorization to business logic
- * - Automatic error wrapping for unexpected exceptions
- * - Pass-through for known error types (UseCaseError, DomainError, InfraError)
+ * - Pass-through for every known error: any {@link CodedError} (UseCaseError and
+ *   its subclasses, DomainError, InfraError, ObjectValidationError,
+ *   AccessDeniedError, InvalidRequestError, your own coded errors) is re-thrown
+ *   unchanged, keeping its class and code
+ * - Wrapping of unexpected exceptions (anything that is not a `CodedError`) in an
+ *   {@link InfraError}, which the presentation layer masks as a 500 /
+ *   `INTERNAL_ERROR`; the original is kept as `cause`
  *
  * Subclasses can override `authorize()` to add authorization checks that run
  * before `handle()`. The authorization phase can return a typed context that
@@ -149,17 +152,26 @@ export abstract class BaseInboundAdapter<
    * 1. `authorize(input)` - Runs authorization checks, returns context
    * 2. `handle(input, authContext)` - Runs business logic with the context
    *
-   * Known error types are re-thrown as-is to preserve error semantics.
-   * Unknown errors are wrapped in a UseCaseError to maintain error hierarchy.
+   * Known errors pass through; unknown errors are wrapped:
+   * - Any {@link CodedError} is re-thrown as-is, so its class and code reach the
+   *   presentation layer (e.g. `AccessDeniedError` → 403, `InvalidRequestError`
+   *   → 400 with its own code, `NotFoundError` → 404).
+   * - Anything else (a bare `Error`, `TypeError`, `RangeError`, a thrown string)
+   *   is an unexpected failure, not a client mistake. It is wrapped in an
+   *   {@link InfraError} (message `'Unexpected use case handler error'`, original
+   *   kept as `cause`), which the HTTP and GraphQL mappers mask as a 500 /
+   *   `INTERNAL_ERROR` and the event / schedule mappers treat as retryable,
+   *   exactly like an unwrapped unknown error. It is deliberately NOT a
+   *   `UseCaseError`, which would surface as a 400 `BAD_REQUEST`.
    *
    * @param input - Input data
    * @returns Promise resolving to the output
    * @throws {ObjectValidationError} For validation failures (propagated to controller)
-   * @throws {UseCaseError} For use case failures or wrapped unknown errors
-   * @throws {ForbiddenError} When authorization is denied
-   * @throws {NotFoundError} When a required resource is not found
+   * @throws {UseCaseError} For use case failures (and subclasses: Forbidden, NotFound, ...)
+   * @throws {AccessDeniedError} When access is denied
    * @throws {DomainError} For domain invariant violations
-   * @throws {InfraError} For infrastructure failures
+   * @throws {InfraError} For infrastructure failures, or wrapping an unknown error
+   * @throws {CodedError} Any other coded error thrown by `authorize()` or `handle()`
    */
   public async execute(...args: TInput extends void ? [] : [input: TInput]): Promise<TOutput> {
     const input = args[0] as TInput;
@@ -168,8 +180,8 @@ export abstract class BaseInboundAdapter<
         const authContext = await this.authorize(input);
         return this.handle(input, authContext);
       },
-      (cause) => new UseCaseError({ message: 'Unexpected use case handler error', cause }),
-      [ObjectValidationError, UseCaseError, DomainError, InfraError],
+      (cause) => new InfraError({ message: 'Unexpected use case handler error', cause }),
+      [CodedError],
     );
   }
 }

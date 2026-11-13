@@ -19,6 +19,7 @@ import { UnauthorizedError } from '../../../app/exceptions/unauthorized.error';
 import { InfraError } from '../../../infra/exceptions/infra.error';
 import { AccessDeniedError } from '../../exceptions/access-denied.error';
 import { ControllerError } from '../../exceptions/controller.error';
+import { InvalidRequestError } from '../../exceptions/invalid-request.error';
 import { isErrorType, hasValidationErrors } from '../../http/shared/error-mapping';
 import type { GraphQLErrorCode, MappedGraphQLError, GraphQLValidationErrorItem } from './types';
 
@@ -71,6 +72,7 @@ const INTERNAL_ERROR_TYPES = [
 export function getGraphQLErrorCode(error: unknown): GraphQLErrorCode {
   // Try instanceof first (faster)
   if (error instanceof ObjectValidationError) return 'VALIDATION_ERROR';
+  if (error instanceof InvalidRequestError) return 'VALIDATION_ERROR';
   if (error instanceof UnauthorizedError) return 'UNAUTHENTICATED';
   if (error instanceof ForbiddenError) return 'FORBIDDEN';
   if (error instanceof AccessDeniedError) return 'FORBIDDEN';
@@ -81,6 +83,7 @@ export function getGraphQLErrorCode(error: unknown): GraphQLErrorCode {
 
   // Fall back to name-based checking for bundled code
   if (isErrorType(error, 'ObjectValidationError')) return 'VALIDATION_ERROR';
+  if (isErrorType(error, 'InvalidRequestError')) return 'VALIDATION_ERROR';
   if (isErrorType(error, 'UnauthorizedError')) return 'UNAUTHENTICATED';
   if (isErrorType(error, 'ForbiddenError')) return 'FORBIDDEN';
   if (isErrorType(error, 'AccessDeniedError')) return 'FORBIDDEN';
@@ -134,7 +137,8 @@ export function shouldMaskGraphQLError(error: unknown): boolean {
  * Maps an error to a GraphQL error with extensions.
  *
  * Mapping strategy (checked in order):
- * 1. `ObjectValidationError` → `VALIDATION_ERROR` (with field errors)
+ * 1. `ObjectValidationError` / `InvalidRequestError` → `VALIDATION_ERROR` (with field errors,
+ *    mirrors HTTP 400)
  * 2. `UnauthorizedError` → `UNAUTHENTICATED` (mirrors HTTP 401)
  * 3. `ForbiddenError` / `AccessDeniedError` → `FORBIDDEN` (mirrors HTTP 403)
  * 4. `NotFoundError` → `NOT_FOUND`
@@ -157,12 +161,15 @@ export function mapErrorToGraphQLError(error: unknown): MappedGraphQLError {
   const code = getGraphQLErrorCode(error);
 
   // Validation errors - include field details
-  if (error instanceof ObjectValidationError) {
+  if (error instanceof ObjectValidationError || error instanceof InvalidRequestError) {
     return buildValidationError(error.message, code, error.code, error.validationErrors);
   }
 
   // Validation errors - fall back to name-based checking for bundled code
-  if (isErrorType(error, 'ObjectValidationError') && hasValidationErrors(error)) {
+  if (
+    (isErrorType(error, 'ObjectValidationError') || isErrorType(error, 'InvalidRequestError')) &&
+    hasValidationErrors(error)
+  ) {
     return buildValidationError(error.message, code, error.code, error.validationErrors);
   }
 

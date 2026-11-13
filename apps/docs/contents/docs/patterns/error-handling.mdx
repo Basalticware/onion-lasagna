@@ -164,7 +164,7 @@ class GetOrderItemsQuery extends BaseInboundAdapter<...> {
 
 ## Use Case Errors
 
-Use for application-level failures:
+Use for application-level failures. `BaseInboundAdapter.execute()` passes every known error (any `CodedError`, such as an `AccessDeniedError`, `InvalidRequestError` or `NotFoundError` thrown by `authorize()` or `handle()`) through unchanged, so it keeps its class and code. An unknown error (a bare `Error`, `TypeError`, …) is a bug or an outage, not a client mistake: it is wrapped in an `InfraError` with the original as `cause`, and masked as a 500 (`INTERNAL_ERROR`), never a 400:
 
 ```typescript
 import {
