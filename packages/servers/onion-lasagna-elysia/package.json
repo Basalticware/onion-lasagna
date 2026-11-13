@@ -1,6 +1,6 @@
 {
   "name": "@cosmneo/onion-lasagna-elysia",
-  "version": "1.0.0-beta.4",
+  "version": "1.0.0-beta.5",
   "description": "Elysia framework adapter for onion-lasagna",
   "type": "module",
   "license": "MIT",
@@ -25,7 +25,7 @@
   },
   "peerDependencies": {
     "elysia": "^1.2",
-    "@cosmneo/onion-lasagna": "^1.0.0-beta.4"
+    "@cosmneo/onion-lasagna": "^1.0.0-beta.5"
   },
   "scripts": {
     "build": "tsup",
