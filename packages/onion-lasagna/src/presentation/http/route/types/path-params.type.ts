@@ -8,6 +8,13 @@
  * @module unified/route/types/path-params
  */
 
+import { InvalidRequestError } from '../../../exceptions/invalid-request.error';
+
+/** Path values that URL parsing treats as dot segments (F6). */
+const DOT_SEGMENTS: ReadonlySet<string> = new Set(['.', '..']);
+
+const DOT_SEGMENT_MESSAGE = 'Path value must not be "." or ".."';
+
 /**
  * A valid path-parameter identifier must start with a letter or underscore,
  * followed by zero or more letters, digits, or underscores — matching the
@@ -215,6 +222,20 @@ export function hasPathParams(path: string): boolean {
  * buildPath('/users/{userId}', { userId: '123' })
  * // '/users/123'
  * ```
+ *
+ * @example A dot-segment value is refused (F6)
+ * ```typescript
+ * buildPath('/users/:id/profile', { id: '..' })
+ * // throws InvalidRequestError (code 'INVALID_REQUEST', field 'pathParams.id')
+ * ```
+ *
+ * @throws {InvalidRequestError} When a value that fills a placeholder is
+ *   exactly `.` or `..` after encoding. URL parsing collapses such a dot
+ *   segment (`/users/../profile` becomes `/profile`), so the value would
+ *   retarget the route. Percent-encoding does not help: WHATWG URL treats
+ *   `%2e%2e` as `..` too. Values that merely contain dots (`a.b`, `..a`) build.
+ *   The check is on the whole value, not on the segment it lands in, so a
+ *   template such as `/files/:name.json` refuses `name: '..'` as well.
  */
 export function buildPath(template: string, params: Record<string, string>): string {
   let result = template;
@@ -227,11 +248,24 @@ export function buildPath(template: string, params: Record<string, string>): str
     // consume the following character.
     // C12-2 fix: use the `g` flag so every occurrence is replaced.
     const colonRegex = new RegExp(`:${key}(?![a-zA-Z0-9_])`, 'g');
-    result = result.replace(colonRegex, encoded);
 
     // Brace syntax is already boundary-safe (closing `}` acts as a natural
     // boundary), but we still use the global flag to replace all occurrences.
     const braceRegex = new RegExp(`\\{${key}\\}`, 'g');
+
+    // F6: refuse a value that would become a `.` or `..` path segment. Checked
+    // on the encoded value, and only when the key fills a placeholder.
+    if (
+      DOT_SEGMENTS.has(encoded) &&
+      (result.search(colonRegex) !== -1 || result.search(braceRegex) !== -1)
+    ) {
+      throw new InvalidRequestError({
+        message: `Path parameter "${key}" must not be "." or ".."`,
+        validationErrors: [{ field: `pathParams.${key}`, message: DOT_SEGMENT_MESSAGE }],
+      });
+    }
+
+    result = result.replace(colonRegex, encoded);
     result = result.replace(braceRegex, encoded);
   }
 
