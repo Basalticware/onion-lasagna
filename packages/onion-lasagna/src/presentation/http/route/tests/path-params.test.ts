@@ -4,6 +4,7 @@
 
 import { describe, it, expect, expectTypeOf } from 'vitest';
 import type { ExtractPathParamNames } from '../types/path-params.type';
+import { InvalidRequestError } from '../../../exceptions/invalid-request.error';
 import {
   pathToRegex,
   getPathParamNames,
@@ -192,6 +193,55 @@ describe('path-params', () => {
     it('replaces all occurrences of a repeated brace param (C12-2)', () => {
       const result = buildPath('/a/{id}/b/{id}', { id: '7' });
       expect(result).toBe('/a/7/b/7');
+    });
+
+    // F6 (research 11, probe P6): a `.` or `..` value would become a dot segment,
+    // which URL parsing collapses, so the value could retarget the route.
+    describe('refuses a dot-segment value (F6)', () => {
+      function refusalOf(build: () => string): InvalidRequestError {
+        try {
+          build();
+        } catch (error) {
+          if (error instanceof InvalidRequestError) return error;
+          throw error;
+        }
+        throw new Error('expected buildPath to refuse the value');
+      }
+
+      it('refuses `..` in a colon param (P6)', () => {
+        const error = refusalOf(() => buildPath('http://h/api/users/:id/profile', { id: '..' }));
+        expect(error.code).toBe('INVALID_REQUEST');
+        expect(error.validationErrors).toEqual([
+          { field: 'pathParams.id', message: 'Path value must not be "." or ".."' },
+        ]);
+      });
+
+      it('refuses `.` in a colon param', () => {
+        const error = refusalOf(() => buildPath('/users/:id/profile', { id: '.' }));
+        expect(error.validationErrors).toEqual([
+          { field: 'pathParams.id', message: 'Path value must not be "." or ".."' },
+        ]);
+      });
+
+      it('refuses `..` and `.` in a brace param', () => {
+        expect(() => buildPath('/users/{id}/profile', { id: '..' })).toThrow(InvalidRequestError);
+        expect(() => buildPath('/users/{id}/profile', { id: '.' })).toThrow(InvalidRequestError);
+      });
+
+      it('still builds values that merely contain dots', () => {
+        expect(buildPath('/users/:id/profile', { id: 'a.b' })).toBe('/users/a.b/profile');
+        expect(buildPath('/users/:id/profile', { id: '..a' })).toBe('/users/..a/profile');
+        expect(buildPath('/users/:id/profile', { id: '...' })).toBe('/users/.../profile');
+        expect(buildPath('/users/{id}/profile', { id: 'a..' })).toBe('/users/a../profile');
+      });
+
+      it('builds a percent-encoded dot value, which encoding turns into a literal', () => {
+        expect(buildPath('/users/:id', { id: '%2e%2e' })).toBe('/users/%252e%252e');
+      });
+
+      it('ignores a dot value whose key is not a placeholder in the template', () => {
+        expect(buildPath('/users/:id', { id: '1', other: '..' })).toBe('/users/1');
+      });
     });
   });
 
