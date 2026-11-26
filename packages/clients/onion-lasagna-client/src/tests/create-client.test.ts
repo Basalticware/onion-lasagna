@@ -5,7 +5,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import { createClient } from '../create-client';
-import { ClientError } from '../client-types';
+import { ClientError, ResponseValidationError } from '../client-types';
+import * as entry from '../index';
 import { defineRoute, defineRouter } from '@cosmneo/onion-lasagna/http/route';
 import { zodSchema } from '@cosmneo/onion-lasagna-zod';
 
@@ -1401,6 +1402,365 @@ describe('createClient', () => {
       // Should succeed on the second attempt
       expect(result).toEqual([]);
       expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // F1: errors keep their cause; interceptor throws propagate unchanged
+  describe('error cause and propagation (F1)', () => {
+    class VendorFailure extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = 'VendorFailure';
+      }
+    }
+
+    it('keeps an injected fetch throw as the ClientError cause (P1)', async () => {
+      const vendorError = new VendorFailure('vendor said no');
+      const mockFetch = vi.fn().mockRejectedValue(vendorError);
+
+      const client = createClient(
+        { list: listUsersRoute },
+        { baseUrl: 'http://localhost:3000', fetch: mockFetch },
+      );
+
+      const error = await client.list().catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ClientError);
+      const clientError = error as ClientError;
+      expect(clientError.status).toBe(0);
+      expect(clientError.statusText).toBe('Network Error');
+      expect(clientError.message).toBe('vendor said no');
+      expect(clientError.cause).toBe(vendorError);
+    });
+
+    it('lets an onResponse throw propagate unchanged and never retries it (P2)', async () => {
+      const interceptorError = new VendorFailure('version header mismatch');
+      const mockFetch = vi
+        .fn()
+        .mockImplementation(() => Promise.resolve(new Response('{}', { status: 200 })));
+      const onError = vi.fn();
+
+      const client = createClient(
+        { list: listUsersRoute },
+        {
+          baseUrl: 'http://localhost:3000',
+          fetch: mockFetch,
+          onError,
+          onResponse: () => {
+            throw interceptorError;
+          },
+          retry: { attempts: 2, delayFn: () => 0 },
+        },
+      );
+
+      const error = await client.list().catch((e: unknown) => e);
+
+      expect(error).toBe(interceptorError);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('turns a 2xx body that does not parse into a non-retried error with the real status (P3)', async () => {
+      const mockFetch = vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          new Response('', {
+            status: 201,
+            statusText: 'Created',
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      );
+      const onError = vi.fn();
+
+      const client = createClient(
+        { list: listUsersRoute },
+        {
+          baseUrl: 'http://localhost:3000',
+          fetch: mockFetch,
+          onError,
+          retry: { attempts: 2, delayFn: () => 0 },
+        },
+      );
+
+      const error = await client.list().catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ClientError);
+      const clientError = error as ClientError;
+      expect(clientError.status).toBe(201);
+      expect(clientError.statusText).toBe('Created');
+      expect(clientError.isNetworkError).toBe(false);
+      expect(clientError.cause).toBeInstanceOf(SyntaxError);
+      expect(clientError.body).toBe('');
+      expect(clientError.response).toBeInstanceOf(Response);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(clientError);
+    });
+
+    it('lets an onError throw on a 4xx/5xx propagate unchanged, calling onError once (P4)', async () => {
+      const handlerError = new Error('handler blew up');
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValue(new Response('boom', { status: 500, statusText: 'Server Error' }));
+      const onError = vi.fn(() => {
+        throw handlerError;
+      });
+
+      const client = createClient(
+        { list: listUsersRoute },
+        { baseUrl: 'http://localhost:3000', fetch: mockFetch, onError },
+      );
+
+      const error = await client.list().catch((e: unknown) => e);
+
+      expect(error).toBe(handlerError);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect((onError.mock.calls[0] as unknown[])[0]).toMatchObject({ status: 500 });
+    });
+
+    it('lets an onError throw on a network error propagate unchanged', async () => {
+      const handlerError = new Error('handler blew up');
+      const mockFetch = vi.fn().mockRejectedValue(new VendorFailure('down'));
+      const onError = vi.fn(() => {
+        throw handlerError;
+      });
+
+      const client = createClient(
+        { list: listUsersRoute },
+        { baseUrl: 'http://localhost:3000', fetch: mockFetch, onError },
+      );
+
+      const error = await client.list().catch((e: unknown) => e);
+
+      expect(error).toBe(handlerError);
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+
+    const failingBody = (cause: Error) =>
+      new ReadableStream({
+        start(controller) {
+          controller.error(cause);
+        },
+      });
+
+    it('treats a 2xx body that fails to read as a retryable network error with its cause', async () => {
+      const resetError = new Error('connection reset');
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(failingBody(resetError), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ok: true }), {
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+
+      const client = createClient(
+        { list: listUsersRoute },
+        {
+          baseUrl: 'http://localhost:3000',
+          fetch: mockFetch,
+          retry: { attempts: 1, delayFn: () => 0 },
+        },
+      );
+
+      await expect(client.list()).resolves.toEqual({ ok: true });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports a 2xx body read failure as a network error keeping its cause', async () => {
+      const resetError = new Error('connection reset');
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValue(new Response(failingBody(resetError), { status: 200 }));
+
+      const client = createClient(
+        { list: listUsersRoute },
+        { baseUrl: 'http://localhost:3000', fetch: mockFetch },
+      );
+
+      const error = await client.list().catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ClientError);
+      const clientError = error as ClientError;
+      expect(clientError.status).toBe(0);
+      expect(clientError.statusText).toBe('Network Error');
+      expect(clientError.cause).toBe(resetError);
+    });
+
+    it('keeps a non-OK body read failure as the ClientError cause', async () => {
+      const resetError = new Error('connection reset');
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValue(new Response(failingBody(resetError), { status: 404 }));
+
+      const client = createClient(
+        { list: listUsersRoute },
+        { baseUrl: 'http://localhost:3000', fetch: mockFetch },
+      );
+
+      const error = await client.list().catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ClientError);
+      const clientError = error as ClientError;
+      expect(clientError.status).toBe(404);
+      expect(clientError.cause).toBe(resetError);
+    });
+
+    it('accepts a cause through the ClientError constructor', () => {
+      const cause = new Error('root');
+      const error = new ClientError('wrapped', 0, 'Network Error', undefined, undefined, {
+        cause,
+      });
+
+      expect(error.cause).toBe(cause);
+    });
+  });
+
+  // F2: opt-in response validation
+  describe('response validation (F2)', () => {
+    const eventRoute = defineRoute({
+      method: 'GET',
+      path: '/events/:eventId',
+      responses: {
+        200: {
+          schema: zodSchema(z.object({ at: z.string().transform((s) => new Date(s)) })),
+          description: 'Success',
+        },
+        202: { description: 'Accepted, no schema' },
+        204: { description: 'No Content' },
+      },
+    });
+
+    const jsonResponse = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    const call = (config: Partial<Parameters<typeof createClient>[1]>, mockFetch: typeof fetch) =>
+      createClient(
+        { get: eventRoute },
+        { baseUrl: 'http://localhost:3000', fetch: mockFetch, ...config },
+      ).get({ pathParams: { eventId: '1' } });
+
+    it("leaves today's behaviour by default: the raw body, unvalidated (P7)", async () => {
+      const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ at: '2026-01-01T00:00:00Z' }));
+
+      const result: unknown = await call({}, mockFetch);
+
+      expect(result).toEqual({ at: '2026-01-01T00:00:00Z' });
+    });
+
+    it('does not reject an invalid body by default', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ at: 42 }));
+
+      const result: unknown = await call({}, mockFetch);
+
+      expect(result).toEqual({ at: 42 });
+    });
+
+    it('returns the validated data when enabled (P7)', async () => {
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValue(jsonResponse({ at: '2026-01-01T00:00:00Z', extra: 'stripped' }));
+
+      const result = await call({ validateResponses: true }, mockFetch);
+
+      expect(result.at).toBeInstanceOf(Date);
+      expect(result.at.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+      expect(result).not.toHaveProperty('extra');
+    });
+
+    it('does not validate an undeclared 2xx', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ anything: true }, 201));
+
+      const result: unknown = await call({ validateResponses: true }, mockFetch);
+
+      expect(result).toEqual({ anything: true });
+    });
+
+    it('does not validate a declared 2xx without a schema', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ anything: true }, 202));
+
+      const result: unknown = await call({ validateResponses: true }, mockFetch);
+
+      expect(result).toEqual({ anything: true });
+    });
+
+    it('returns undefined for 204 when enabled', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+
+      const result: unknown = await call({ validateResponses: true }, mockFetch);
+
+      expect(result).toBeUndefined();
+    });
+
+    it('throws ResponseValidationError on a failure, calls onError once and never retries', async () => {
+      const mockFetch = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ at: 42 })));
+      const onError = vi.fn();
+
+      const error = await call(
+        { validateResponses: true, onError, retry: { attempts: 2, delayFn: () => 0 } },
+        mockFetch,
+      ).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ResponseValidationError);
+      expect(error).toBeInstanceOf(ClientError);
+      const validationError = error as ResponseValidationError;
+      expect(validationError.code).toBe('RESPONSE_VALIDATION_ERROR');
+      expect(validationError.status).toBe(200);
+      expect(validationError.body).toEqual({ at: 42 });
+      expect(validationError.issues.length).toBeGreaterThan(0);
+      expect(validationError.issues[0]?.path).toEqual(['at']);
+      expect(validationError.response).toBeInstanceOf(Response);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(validationError);
+    });
+
+    it("'warn' reports a failure and returns the unvalidated data", async () => {
+      const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ at: 42 }));
+      const onError = vi.fn();
+      const onResponseValidationError = vi.fn();
+
+      const result: unknown = await call(
+        { validateResponses: 'warn', onError, onResponseValidationError },
+        mockFetch,
+      );
+
+      expect(result).toEqual({ at: 42 });
+      expect(onResponseValidationError).toHaveBeenCalledTimes(1);
+      expect(onResponseValidationError).toHaveBeenCalledWith(expect.any(ResponseValidationError));
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("'warn' reports through console.warn when no sink is given", async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ at: 42 }));
+
+      try {
+        const result: unknown = await call({ validateResponses: 'warn' }, mockFetch);
+
+        expect(result).toEqual({ at: 42 });
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]).toContainEqual(expect.any(ResponseValidationError));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("'warn' returns the validated data on success", async () => {
+      const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ at: '2026-01-01T00:00:00Z' }));
+
+      const result = await call({ validateResponses: 'warn' }, mockFetch);
+
+      expect(result.at).toBeInstanceOf(Date);
+    });
+
+    it('exports ResponseValidationError from the package entry', () => {
+      expect(entry.ResponseValidationError).toBeTypeOf('function');
+      expect(entry.ResponseValidationError).toBe(ResponseValidationError);
+      expect(entry.ClientError).toBe(ClientError);
     });
   });
 });

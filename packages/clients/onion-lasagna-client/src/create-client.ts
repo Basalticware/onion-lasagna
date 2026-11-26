@@ -19,8 +19,9 @@ import {
   buildPath,
   hasPathParams,
 } from '@cosmneo/onion-lasagna/http/route';
+import type { SchemaAdapter } from '@cosmneo/onion-lasagna/http/schema';
 import type { ClientCallOptions, ClientConfig, InferClient } from './client-types';
-import { ClientError } from './client-types';
+import { ClientError, ResponseValidationError } from './client-types';
 
 /**
  * Default retry status codes.
@@ -176,10 +177,115 @@ function parseRetryAfterMs(retryAfterHeader: string | null): number | undefined 
 }
 
 /**
+ * The parts of a route definition the client method reads at runtime.
+ */
+interface RouteShape {
+  readonly method: string;
+  readonly path: string;
+  readonly request?: unknown;
+  readonly responses?: Readonly<Record<string, { readonly schema?: SchemaAdapter }>>;
+}
+
+/**
+ * Maps an error thrown by `fetch`, or by reading a response body, to a
+ * `ClientError` with status 0, keeping the original as `cause`.
+ */
+function toTransportError(
+  error: unknown,
+  didTimeout: boolean,
+  effectiveTimeout: number,
+): { clientError: ClientError; retryable: boolean } {
+  const isAbortError =
+    error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
+
+  let errorMessage: string;
+  let errorStatus: string;
+
+  if (didTimeout) {
+    errorMessage = `Request timeout after ${effectiveTimeout}ms`;
+    errorStatus = 'Timeout';
+  } else if (isAbortError) {
+    errorMessage = 'Request was aborted';
+    errorStatus = 'Aborted';
+  } else {
+    errorMessage = error instanceof Error ? error.message : 'Network error';
+    errorStatus = 'Network Error';
+  }
+
+  return {
+    clientError: new ClientError(errorMessage, 0, errorStatus, undefined, undefined, {
+      cause: error,
+    }),
+    // Timeouts and aborts are never retried
+    retryable: !didTimeout && !isAbortError,
+  };
+}
+
+/**
+ * Hands a client error to `onError` once, then throws it. A throw from
+ * `onError` propagates unchanged.
+ */
+async function fail(error: ClientError, config: ClientConfig): Promise<never> {
+  if (config.onError) {
+    await config.onError(error);
+  }
+  throw error;
+}
+
+/**
+ * F2: validates a successful body against the schema the route declares for
+ * the response status, when `validateResponses` asks for it.
+ *
+ * Returns the schema's validated data on success. An undeclared status or a
+ * declared status without a schema returns the body unchanged.
+ */
+async function validateResponseBody(
+  route: RouteShape,
+  response: Response,
+  body: unknown,
+  config: ClientConfig,
+): Promise<unknown> {
+  const mode = config.validateResponses ?? false;
+  if (!mode) {
+    return body;
+  }
+
+  const schema = route.responses?.[String(response.status)]?.schema;
+  if (!schema) {
+    return body;
+  }
+
+  const result = schema.validate(body);
+  if (result.success) {
+    return result.data;
+  }
+
+  const error = new ResponseValidationError(
+    response.status,
+    response.statusText,
+    body,
+    result.issues,
+    response,
+  );
+
+  if (mode === 'warn') {
+    if (config.onResponseValidationError) {
+      config.onResponseValidationError(error);
+    } else {
+      console.warn(error.message, error);
+    }
+    return body;
+  }
+
+  // Deterministic: never retried
+  return fail(error, config);
+}
+
+/**
  * Creates a method for a single route.
  */
 function createRouteMethod(
-  route: { method: string; path: string; request?: unknown },
+  route: RouteShape,
   config: ClientConfig,
 ): (input?: Record<string, unknown>, options?: ClientCallOptions) => Promise<unknown> {
   return async (input?: Record<string, unknown>, options?: ClientCallOptions) => {
@@ -258,6 +364,8 @@ function createRouteMethod(
     // C10-3: Only retry idempotent methods by default; POST/PATCH require explicit opt-in
     const retryMethods = config.retry?.retryMethods ?? DEFAULT_RETRY_METHODS;
     const isMethodRetryable = retryMethods.includes(route.method.toUpperCase());
+    const backoff = (attempt: number): number =>
+      retryDelayFn ? retryDelayFn(attempt) : computeBackoff(attempt, retryBaseDelay, retryMaxDelay);
 
     // C10-1: apply the documented 30 s default timeout when none is configured
     const effectiveTimeout = config.timeout ?? DEFAULT_TIMEOUT;
@@ -307,10 +415,26 @@ function createRouteMethod(
       }
 
       try {
-        let response = await fetchFn(
-          request.clone(),
-          effectiveSignal ? { signal: effectiveSignal } : {},
-        );
+        // F1: only the fetch itself is guarded as a transport failure. Throws from
+        // onResponse and onError propagate unchanged.
+        let response: Response;
+        try {
+          response = await fetchFn(
+            request.clone(),
+            effectiveSignal ? { signal: effectiveSignal } : {},
+          );
+        } catch (error) {
+          const { clientError, retryable } = toTransportError(error, didTimeout, effectiveTimeout);
+
+          // Don't retry timeouts, user-initiated aborts, or non-idempotent methods
+          if (attempt < retryAttempts && retryable && isMethodRetryable) {
+            lastError = clientError;
+            await sleep(backoff(attempt));
+            continue;
+          }
+
+          return await fail(clientError, config);
+        }
 
         // Apply response interceptor
         if (config.onResponse) {
@@ -328,11 +452,7 @@ function createRouteMethod(
                 ? parseRetryAfterMs(response.headers.get('Retry-After'))
                 : undefined;
 
-            const delay =
-              retryAfterMs ??
-              (retryDelayFn
-                ? retryDelayFn(attempt)
-                : computeBackoff(attempt, retryBaseDelay, retryMaxDelay));
+            const delay = retryAfterMs ?? backoff(attempt);
 
             // Stash a minimal error in case we exhaust all retries
             lastError = new ClientError(
@@ -351,6 +471,7 @@ function createRouteMethod(
           // Reading as text first prevents the body double-read bug where calling
           // response.json() consumes the stream, making response.text() return ''.
           let body: unknown;
+          let readFailure: { cause: unknown } | undefined;
           try {
             const text = await response.text();
             try {
@@ -359,26 +480,24 @@ function createRouteMethod(
               body = text;
             }
           } catch (readError) {
+            readFailure = { cause: readError };
             body = {
               _parseError: 'Failed to read response body',
               _readError: readError instanceof Error ? readError.message : 'Read failed',
             };
           }
 
-          const error = new ClientError(
-            `Request failed with status ${response.status}`,
-            response.status,
-            response.statusText,
-            body,
-            response,
+          return await fail(
+            new ClientError(
+              `Request failed with status ${response.status}`,
+              response.status,
+              response.statusText,
+              body,
+              response,
+              readFailure,
+            ),
+            config,
           );
-
-          // Call error handler
-          if (config.onError) {
-            await config.onError(error);
-          }
-
-          throw error;
         }
 
         // Parse successful response
@@ -387,55 +506,46 @@ function createRouteMethod(
           return undefined;
         }
 
-        const contentType = response.headers.get('Content-Type');
-        if (contentType?.includes('application/json')) {
-          return await response.json();
+        // A failure while the body streams in (reset, timeout, abort) is a
+        // transport failure, retried like a fetch throw.
+        let text: string;
+        try {
+          text = await response.text();
+        } catch (error) {
+          const { clientError, retryable } = toTransportError(error, didTimeout, effectiveTimeout);
+
+          if (attempt < retryAttempts && retryable && isMethodRetryable) {
+            lastError = clientError;
+            await sleep(backoff(attempt));
+            continue;
+          }
+
+          return await fail(clientError, config);
         }
 
-        return await response.text();
-      } catch (error) {
-        if (error instanceof ClientError) {
-          throw error;
+        // F1: a 2xx body that does not parse is a client error with the real
+        // status and the parse error as its cause. It is deterministic, so it is
+        // never retried.
+        let body: unknown = text;
+        if (response.headers.get('Content-Type')?.includes('application/json')) {
+          try {
+            body = JSON.parse(text);
+          } catch (error) {
+            return await fail(
+              new ClientError(
+                `Failed to parse response body (status ${response.status})`,
+                response.status,
+                response.statusText,
+                text,
+                response,
+                { cause: error },
+              ),
+              config,
+            );
+          }
         }
 
-        // Determine error type: timeout, abort, or network error
-        const isAbortError =
-          error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
-
-        // An abort is "external" if it came from caller's signal (not our timeout)
-        const isExternalAbort = isAbortError && Boolean(externalSignal?.aborted) && !didTimeout;
-
-        let errorMessage: string;
-        let errorStatus: string;
-
-        if (didTimeout) {
-          errorMessage = `Request timeout after ${effectiveTimeout}ms`;
-          errorStatus = 'Timeout';
-        } else if (isAbortError) {
-          errorMessage = 'Request was aborted';
-          errorStatus = 'Aborted';
-        } else {
-          errorMessage = error instanceof Error ? error.message : 'Network error';
-          errorStatus = 'Network Error';
-        }
-
-        const clientError = new ClientError(errorMessage, 0, errorStatus, undefined, undefined);
-
-        // Don't retry timeouts, user-initiated aborts, or non-idempotent methods
-        if (attempt < retryAttempts && !isAbortError && !isExternalAbort && isMethodRetryable) {
-          lastError = clientError;
-          const delay = retryDelayFn
-            ? retryDelayFn(attempt)
-            : computeBackoff(attempt, retryBaseDelay, retryMaxDelay);
-          await sleep(delay);
-          continue;
-        }
-
-        if (config.onError) {
-          await config.onError(clientError);
-        }
-
-        throw clientError;
+        return await validateResponseBody(route, response, body, config);
       } finally {
         // Always clear timeout to prevent memory leaks
         if (timeoutId) {

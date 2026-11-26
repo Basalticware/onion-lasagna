@@ -39,7 +39,7 @@ export type {
   ClientMethod,
   InferClient,
 } from './client-types';
-export { ClientError } from './client-types';
+export { ClientError, ResponseValidationError } from './client-types';
 
 // Mock client
 export { createMockClient, mockSequence } from './create-mock-client';

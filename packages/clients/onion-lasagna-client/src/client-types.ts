@@ -11,6 +11,7 @@ import type {
   HasPathParams,
   PrettifyDeep,
 } from '@cosmneo/onion-lasagna/http/route';
+import type { ValidationIssue } from '@cosmneo/onion-lasagna/http/schema';
 
 // ============================================================================
 // Client Configuration
@@ -71,9 +72,35 @@ export interface ClientConfig {
 
   /**
    * Error handler.
-   * Called when a request fails.
+   * Called once with the `ClientError` before it is thrown: a non-OK response,
+   * a network error, timeout or abort, a 2xx body that cannot be parsed, or a
+   * `ResponseValidationError`. A throw from this handler propagates unchanged.
    */
   readonly onError?: (error: ClientError) => void | Promise<void>;
+
+  /**
+   * Validates each successful response against the route's declared schema
+   * for its status.
+   *
+   * - `false` (default): the parsed body is returned unvalidated.
+   * - `true`: the schema's validated data is returned; a failure throws a
+   *   `ResponseValidationError` (after `onError`), which is never retried.
+   * - `'warn'`: the schema's validated data is returned; a failure is reported
+   *   to `onResponseValidationError` and the unvalidated body is returned, so
+   *   the value may not match the route's declared response type.
+   *
+   * An undeclared 2xx status, a declared status without a schema, and
+   * 204/205/304 responses are never validated.
+   *
+   * @default false
+   */
+  readonly validateResponses?: boolean | 'warn';
+
+  /**
+   * Receives a response validation failure when `validateResponses` is `'warn'`.
+   * Defaults to `console.warn`.
+   */
+  readonly onResponseValidationError?: (error: ResponseValidationError) => void;
 
   /**
    * Retry configuration.
@@ -126,6 +153,10 @@ export interface ClientConfig {
 
 /**
  * Error thrown by the client.
+ *
+ * `status` is the HTTP status of the response, or `0` when no response was
+ * received (network error, timeout, abort). The original error, when there is
+ * one, is kept as `cause`.
  */
 export class ClientError extends Error {
   constructor(
@@ -134,8 +165,9 @@ export class ClientError extends Error {
     public readonly statusText: string,
     public readonly body?: unknown,
     public readonly response?: Response,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'ClientError';
   }
 
@@ -158,6 +190,29 @@ export class ClientError extends Error {
    */
   get isNetworkError(): boolean {
     return this.status === 0;
+  }
+}
+
+/**
+ * Error thrown when `validateResponses` is `true` and a successful response
+ * does not match the schema the route declares for its status.
+ *
+ * `body` is the unvalidated parsed body; `issues` are the schema's issues,
+ * with paths relative to the body.
+ */
+export class ResponseValidationError extends ClientError {
+  /** Mirrors the server's response validation error code. */
+  readonly code = 'RESPONSE_VALIDATION_ERROR' as const;
+
+  constructor(
+    status: number,
+    statusText: string,
+    body: unknown,
+    public readonly issues: readonly ValidationIssue[],
+    response?: Response,
+  ) {
+    super(`Response validation failed for status ${status}`, status, statusText, body, response);
+    this.name = 'ResponseValidationError';
   }
 }
 
