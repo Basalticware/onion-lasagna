@@ -1,5 +1,12 @@
 # @cosmneo/onion-lasagna-graphql-client
 
+## 1.0.0-beta.6
+
+### Patch Changes
+
+- Updated dependencies [36567c0]
+  - @cosmneo/onion-lasagna@1.0.0-beta.6
+
 ## 1.0.0-beta.5
 
 ### Patch Changes
