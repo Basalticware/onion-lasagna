@@ -28,11 +28,13 @@
     "onion-lasagna-cli": "0.1.0"
   },
   "changesets": [
+    "client-errors-keep-cause-and-validate-responses",
     "easy-islands-cry",
     "hono-binary-response-bodies",
     "inbound-adapter-coded-error-passthrough",
     "large-wolves-rush",
     "outbound-adapter-coded-error-passthrough",
+    "path-params-refuse-dot-segments",
     "schedule-transport-tier",
     "sdl-empty-tuple-union",
     "v1-audit-remediation"

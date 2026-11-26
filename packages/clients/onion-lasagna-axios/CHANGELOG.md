@@ -1,5 +1,7 @@
 # @cosmneo/onion-lasagna-axios
 
+## 1.0.0-beta.6
+
 ## 1.0.0-beta.5
 
 ## 1.0.0-beta.4
